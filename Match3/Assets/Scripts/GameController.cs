@@ -1,140 +1,173 @@
-﻿using System;
-using System.Collections;
-using System.Collections.Generic;
-using UnityEngine;
-using UnityEngine.UI;
+﻿using UnityEngine;
 using UniRx;
+using System;
 
-public enum TileType
+public class GameController : MonoBehaviour 
 {
-    Gold,
-    Crystal,
-    Iron,
-    Wood,
-    Meat,
-    Tool
-}
+    public static GameController instance;
 
-public class GameController : MonoBehaviour
-{
-    [SerializeField] private GameObject tilePrefab;
-    [SerializeField] private GameObject gameField;
-    [SerializeField] private Sprite[] tileImages;
+    [SerializeField] private BoardController board;   
+    [SerializeField] private int roundGoalIncrease = 35;
+    [SerializeField] private int resetTimer = 120;
+    [SerializeField] private int roundOneGoal = 10;
 
-    private Tuple<GameObject, TileType>[,] inGameTiles;
-    private Tuple<GameObject, TileType>[] inReserveTiles;
-    private Camera camera;
-    private bool swapIsStarted;
-    private GameObject currentTile;
+    [HideInInspector] public int score, totalScore, round, scoreRoundGoal;
+    [HideInInspector] public float timer;
+    [HideInInspector] public bool isSelected;
+
+    public Subject<bool> OnGameOver = new Subject<bool>();
+
+    public GameObject additionUI, shuffleUI, nextRoundUIController;
+
+    private int selectedXCor_1, selectedYCor_1, selectedXCor_2, selectedYCor_2;
+    private bool isSwitching = false;
+    private bool gameover = false;
+
+    void Awake() 
+    {
+        instance = this;
+        Setup();
+    }
 
     private void Start()
     {
-        camera = Camera.main;
-
-        inGameTiles = new Tuple<GameObject, TileType>[10, 10];
-        inReserveTiles = new Tuple<GameObject, TileType>[20];
-
-        InitGameField();
+        Time.timeScale = 1;       
     }
 
-    private void InitGameField()
+    void Update() 
     {
-        for(int i = 0; i < 10; i++)
+        UpdateTimer();
+    }
+
+    //Настройка первичных параметров
+    private void Setup() 
+    {
+        round = 1;
+        timer = resetTimer;
+        scoreRoundGoal = roundOneGoal;
+        isSelected = false;
+    }
+
+    //Обновляем таймер, если таймер опустился до нуля, то заканчиваем игру
+    private void UpdateTimer() 
+    {
+        if (timer <= 0 && !gameover) 
+            GameOver();
+        else 
+            timer -= Time.deltaTime;
+    }
+
+    //Проверим можно ли совершить ход
+    public void CheckIfPossibleMove() 
+    {
+        if (PerpendicularMove() && !isSwitching) 
         {
-            for(int j = 0; j < 10; j++)
+            if (board.CheckIfSwitchIsPossible(selectedXCor_1, selectedYCor_1, selectedXCor_2, selectedYCor_2, true)) 
             {
-                var tileType = GetRandomTileType();
-                var position = new Vector2(i*50, j*50);
+                AudioController.instance.Play("Swap");
 
-                var currentTile = Instantiate(tilePrefab, gameField.transform);
-                currentTile.transform.localPosition = position;
-                currentTile.GetComponent<Image>().sprite = GetTileImage(tileType);
+                board.MakeSpriteSwitch(selectedXCor_1, selectedYCor_1, selectedXCor_2, selectedYCor_2);
 
-                inGameTiles[i, j] = new Tuple<GameObject, TileType>(currentTile, tileType);
+                isSwitching = true;
 
-                var cButton = currentTile.GetComponent<Button>();
-                cButton.OnClickAsObservable().Subscribe(_ => OnTileClick(currentTile));
+                ResetCoordinates();
+
+                isSelected = false;
             }
         }
     }
 
-    private TileType GetRandomTileType()
+    //Проверяем можем ли мы поменять выбранные гемы
+    bool PerpendicularMove() 
     {
-        var i = UnityEngine.Random.Range(0, 6);
-
-        var type = TileType.Gold;
-
-        switch (i)
+        if ((selectedXCor_1 + 1 == selectedXCor_2 && selectedYCor_1 == selectedYCor_2) ||           
+                   (selectedXCor_1 - 1 == selectedXCor_2 && selectedYCor_1 == selectedYCor_2) ||    
+                   (selectedXCor_1 == selectedXCor_2 && selectedYCor_1 + 1 == selectedYCor_2) ||    
+                   (selectedXCor_1 == selectedXCor_2 && selectedYCor_1 - 1 == selectedYCor_2)) 
         {
-            case 1: type = TileType.Crystal; break;
-            case 2: type = TileType.Iron; break;
-            case 3: type = TileType.Wood; break;
-            case 4: type = TileType.Meat; break;
-            case 5: type = TileType.Tool; break;
-        }
-
-        return type;
+            return true;
+        } 
+        else 
+            return false;
     }
 
-    private Sprite GetTileImage(TileType type)
-    {
-        Sprite sprite = null;
 
-        switch (type)
+    //Добавление очков и обновление таймера, в случае есть текущее количество очков мы набрали
+    public void AddScore(int sequenceCount) 
+    {
+        score += sequenceCount - 1;
+        totalScore += sequenceCount - 1;
+
+        UIController.instance.AdditionPopUp(additionUI, 1.0f, sequenceCount - 1);
+
+        if (score >= scoreRoundGoal) 
         {
-            case TileType.Gold: sprite = tileImages[0]; break;
-            case TileType.Crystal: sprite = tileImages[1]; break;
-            case TileType.Iron: sprite = tileImages[2]; break;
-            case TileType.Wood: sprite = tileImages[3]; break;
-            case TileType.Meat: sprite = tileImages[4]; break;
-            case TileType.Tool: sprite = tileImages[5]; break;
+            StartCoroutine(UIController.instance.PopUpFadeAway(nextRoundUIController, 3.0f));
+
+            scoreRoundGoal += roundGoalIncrease;
+            round += 1;
+            score = 0;
+            timer = resetTimer;
         }
-
-        return sprite;
     }
 
-    private void OnTileClick(GameObject tile)
+    public void SetIsSelected(bool status) 
     {
-        if (swapIsStarted)
-            SwapEnd(tile);
-        else
-            SwapStart(tile);
+        AudioController.instance.Play("Select");
+
+        isSelected = status;
     }
 
-    private void SwapStart(GameObject tile)
+    public void SetIsSwitching(bool status) 
     {
-        swapIsStarted = true;
-
-        currentTile = tile;
+        isSwitching = status;
     }
 
-    private void SwapEnd(GameObject tile)
-    {      
-        if (tile != currentTile && CheskDistance(tile))
+    public void SetSelectedCoordinates(bool firstSelection, int x, int y) 
+    {
+        if (firstSelection) 
         {
-            var tempPos = currentTile.transform.position;
-
-            currentTile.transform.position = tile.transform.position;
-
-            tile.transform.position = tempPos;
+            selectedXCor_1 = x;
+            selectedYCor_1 = y;
+        } 
+        else 
+        {
+            selectedXCor_2 = x;
+            selectedYCor_2 = y;
         }
-        
-        swapIsStarted = false;
-
-        currentTile = null;
     }
 
-    private bool CheskDistance(GameObject tile)
+    private void ResetCoordinates() 
     {
-        var distanceCheck = false;
+        selectedXCor_1 = 0;
+        selectedYCor_1 = 0;
+        selectedXCor_2 = 0;
+        selectedYCor_2 = 0;
+    }
 
-        var curPosition = currentTile.transform.position;
-        var swapPosition = tile.transform.position;
+    //Обработка события окончания игры
+    private void GameOver() 
+    {
+        gameover = true;
+      
+        board.DeactivateBoard();
 
-        if ((Mathf.Abs(curPosition.x - swapPosition.x) == 50 && curPosition.y == swapPosition.y)
-            || (Mathf.Abs(curPosition.y - swapPosition.y) == 50 && curPosition.x == swapPosition.x))
-            distanceCheck = true;
+        SaveResult();
 
-        return distanceCheck;
+        OnGameOver.OnNext(true);
+
+        Time.timeScale = 0;
+    }
+
+    private void SaveResult()
+    {
+        string saveData = "";
+
+        if (PlayerPrefs.HasKey("TableOfRecords"))
+            saveData = PlayerPrefs.GetString("TableOfRecords");
+
+        saveData += $"{DateTime.Now} - очки: {totalScore} - раунд: {round};";
+
+        PlayerPrefs.SetString("TableOfRecords", saveData);
     }
 }
